@@ -17,10 +17,10 @@ def _mapListToKeys(dataDict, mapList):
 
 
 def _attach(branch, trunk):
-    '''
+    """
     Insert a branch of directories on its trunk.
     http://stackoverflow.com/questions/8484943
-    '''
+    """
     parts = branch.split('/', 1)
     if len(parts) == 1:  # branch is a file
         trunk[FILE_MARKER].append(parts[0])
@@ -32,7 +32,21 @@ def _attach(branch, trunk):
 
 
 class GirderFS(LoggingMixIn, Operations):
-    'Example filesystem to demonstrate fuse_get_context()'
+    """
+    GirderFS filesystem for mounting Girder's FilesystemAssetstore
+
+    :param folderId: Folder id
+    :type folderId: str
+    :param gc: Authenticated instance of GirderClient
+    :type gc: girder_client.GriderClient
+
+    .. code-block:: python
+
+        gc = girder_client.GirderClient(apiUrl=girder_api_url)
+        gc.authenticate(apiKey=girder_api_key)
+        logging.basicConfig(level=logging.DEBUG)
+        fuse = FUSE(GirderFS(argv[1], gc), argv[2], foreground=True, ro=True)
+    """
 
     def __init__(self, folderId, gc):
         super(GirderFS, self).__init__()
