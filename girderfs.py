@@ -1,23 +1,12 @@
-#!/usr/bin/env python
 from collections import defaultdict
-import logging
-import girder_client
 
 import os
 from stat import S_IFDIR
-from sys import argv, exit
 from time import time
 
-from fuse import FUSE, Operations, LoggingMixIn
+from fuse import Operations, LoggingMixIn
 
 FILE_MARKER = '<files>'
-GIRDER_API_URL = os.environ.get('GIRDER_API_URL',
-                                'http://localhost:8080/api/v1')
-try:
-    GIRDER_API_KEY = os.environ['GIRDER_API_KEY']
-except KeyError:
-    print('You need to set env var with girder api key')
-    raise
 
 
 def _mapListToKeys(dataDict, mapList):
@@ -44,11 +33,10 @@ def _attach(branch, trunk):
 class GirderFS(LoggingMixIn, Operations):
     'Example filesystem to demonstrate fuse_get_context()'
 
-    def __init__(self, folderId):
+    def __init__(self, folderId, gc):
         super(GirderFS, self).__init__()
         self.folderId = folderId
-        self.gc = girder_client.GirderClient(apiUrl=GIRDER_API_URL)
-        self.gc.authenticate(apiKey=GIRDER_API_KEY)
+        self.gc = gc
 
     def _refreshData(self):
         self.data = self.gc.get('folder/%s/contents' % self.folderId)
@@ -115,10 +103,24 @@ class GirderFS(LoggingMixIn, Operations):
 
 
 if __name__ == '__main__':
+    import girder_client
+    import logging
+    from sys import argv, exit
+    from fuse import FUSE
+    girder_api_url = os.environ.get('GIRDER_API_URL',
+                                    'http://localhost:8080/api/v1')
+    try:
+        girder_api_key = os.environ['GIRDER_API_KEY']
+    except KeyError:
+        print('You need to set env var with girder api key')
+        raise
+
     if len(argv) != 3:
         print('usage: %s <folderId> <mountpoint>' % argv[0])
         print('exampe: %s 57716a4b37025b0001078154 /tmp/myfs' % argv[0])
         exit(1)
 
+    gc = girder_client.GirderClient(apiUrl=girder_api_url)
+    gc.authenticate(apiKey=girder_api_key)
     logging.basicConfig(level=logging.DEBUG)
-    fuse = FUSE(GirderFS(argv[1]), argv[2], foreground=True, ro=True)
+    fuse = FUSE(GirderFS(argv[1], gc), argv[2], foreground=True, ro=True)
