@@ -15,6 +15,9 @@ FILE_MARKER = '<files>'
 
 
 def _mapListToKeys(dataDict, mapList):
+    """
+    Maps list ['a', 'b', 'c'] to dict['a']['b']['c']
+    """
     if not mapList:
         return dataDict
     return _mapListToKeys(dataDict[mapList[0]], mapList[1:])
@@ -45,6 +48,14 @@ def _convert_time(strtime):
 
 
 class RESTGirderFS(LoggingMixIn, Operations):
+    """
+    Filesystem for locally mounting a remote Girder folder
+
+    :param folderId: Folder id
+    :type folderId: str
+    :param gc: Authenticated instance of GirderClient
+    :type gc: girder_client.GriderClient
+    """
 
     def __init__(self, folderId, gc):
         super(RESTGirderFS, self).__init__()
@@ -137,19 +148,12 @@ class RESTGirderFS(LoggingMixIn, Operations):
 
 class GirderFS(LoggingMixIn, Operations):
     """
-    GirderFS filesystem for mounting Girder's FilesystemAssetstore
+    Filesystem for mounting local Girder's FilesystemAssetstore
 
     :param folderId: Folder id
     :type folderId: str
     :param gc: Authenticated instance of GirderClient
     :type gc: girder_client.GriderClient
-
-    .. code-block:: python
-
-        gc = girder_client.GirderClient(apiUrl=girder_api_url)
-        gc.authenticate(apiKey=girder_api_key)
-        logging.basicConfig(level=logging.DEBUG)
-        fuse = FUSE(GirderFS(argv[1], gc), argv[2], foreground=True, ro=True)
     """
 
     def __init__(self, folderId, gc):
