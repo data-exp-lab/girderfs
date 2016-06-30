@@ -49,9 +49,10 @@ class RESTGirderFS(LoggingMixIn, Operations):
         super(RESTGirderFS, self).__init__()
         self.folderId = folderId
         self.gc = gc
+        self.cache = {}
 
     def _get_object_by_path(self, objId, path):
-        raw_listing = self.gc.get('folder/%s/listing' % objId)
+        raw_listing = self._get_listing(objId)
         folder = next((item for item in raw_listing['folders']
                        if item["name"] == path.parts[0]), None)
 
@@ -68,6 +69,14 @@ class RESTGirderFS(LoggingMixIn, Operations):
             return _file, "file"
 
         return FuseOSError(ENOENT)
+
+    def _get_listing(self, objId):
+        try:
+            return self.cache[objId]
+        except KeyError:
+            self.cache[objId] = self.gc.get('folder/%s/listing' % objId)
+        finally:
+            return self.cache[objId]
 
     def getattr(self, path, fh=None):
         if path == '/':
@@ -97,11 +106,11 @@ class RESTGirderFS(LoggingMixIn, Operations):
     def readdir(self, path, fh):
         dirents = ['.', '..']
         if path == '/':
-            raw_listing = self.gc.get('folder/%s/listing' % self.folderId)
+            raw_listing = self._get_listing(self.folderId)
         else:
             obj, objType = self._get_object_by_path(
                 self.folderId, _lstrip_path(path))
-            raw_listing = self.gc.get('folder/%s/listing' % obj["_id"])
+            raw_listing = self._get_listing(obj["_id"])
 
         for objType in raw_listing.keys():
             dirents += [_["name"] for _ in raw_listing[objType]]
