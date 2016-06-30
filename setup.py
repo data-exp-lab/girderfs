@@ -39,6 +39,11 @@ setup(
     description='FUSE filesystem allowing to mount Girder\'s fs assetstore',
     long_description=readme,
     packages=['girderfs'],
+    entry_points={
+        'console_scripts': [
+            'girderfs = girderfs.__main__:main'
+        ]
+    },
     install_requires=[
         'fusepy',
         'girder-client'
