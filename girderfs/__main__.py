@@ -13,6 +13,7 @@ def main(args=None):
     parser.add_argument('--username', required=False, default=None)
     parser.add_argument('--password', required=False, default=None)
     parser.add_argument('--api-key', required=False, default=None)
+    parser.add_argument('--token', required=False, default=None)
     parser.add_argument('-c', default='remote', choices=['remote', 'direct'],
                         help='command to run')
     parser.add_argument('local_folder', help='path to local target folder')
@@ -21,7 +22,9 @@ def main(args=None):
     args = parser.parse_args()
 
     gc = GirderClient(apiUrl=args.api_url)
-    if args.api_key:
+    if args.token:
+        gc.token = args.token
+    elif args.api_key:
         gc.authenticate(apiKey=args.api_key)
     elif args.username and args.password:
         gc.authenticate(username=args.username, password=args.password)
