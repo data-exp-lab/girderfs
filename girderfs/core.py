@@ -2,10 +2,13 @@
 from collections import defaultdict
 
 import os
-from stat import S_IFDIR
-from time import time
+import six
+import time
+import pathlib
+from stat import S_IFDIR, S_IFREG
+from errno import ENOENT
 
-from fuse import Operations, LoggingMixIn
+from fuse import Operations, LoggingMixIn, FuseOSError
 
 FILE_MARKER = '<files>'
 
@@ -29,6 +32,91 @@ def _attach(branch, trunk):
         if node not in trunk:
             trunk[node] = defaultdict(dict, ((FILE_MARKER, []),))
         _attach(others, trunk[node])
+
+
+def _lstrip_path(path):
+    pathObj = pathlib.Path(path)
+    return pathlib.Path(*pathObj.parts[1:])
+
+
+def _convert_time(strtime):
+    return time.mktime(time.strptime(strtime[:-6], "%Y-%m-%dT%H:%M:%S.%f"))
+
+
+class RESTGirderFS(LoggingMixIn, Operations):
+
+    def __init__(self, folderId, gc):
+        super(RESTGirderFS, self).__init__()
+        self.folderId = folderId
+        self.gc = gc
+
+    def _get_object_by_path(self, objId, path):
+        raw_listing = self.gc.get('folder/%s/listing' % objId)
+        folder = next((item for item in raw_listing['folders']
+                       if item["name"] == path.parts[0]), None)
+
+        if folder is not None:
+            if len(path.parts) == 1:
+                return folder, "folder"
+            else:
+                return self._get_object_by_path(folder["_id"],
+                                                pathlib.Path(*path.parts[1:]))
+
+        _file = next((item for item in raw_listing['files']
+                      if item["name"] == path.parts[0]), None)
+        if _file is not None:
+            return _file, "file"
+
+        return FuseOSError(ENOENT)
+
+    def getattr(self, path, fh=None):
+        if path == '/':
+            return dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
+        obj, objType = self._get_object_by_path(
+            self.folderId, _lstrip_path(path))
+
+        if objType == 'folder':
+            st = dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
+        else:
+            st = dict(st_mode=(S_IFREG | 0o644), st_nlink=1)
+
+        st.update(dict(st_ctime=_convert_time(obj["created"]),
+                       st_mtime=_convert_time(obj["updated"]),
+                       st_size=obj["size"],
+                       st_atime=time.time()))
+        return st
+
+    def read(self, path, size, offset, fh):
+        obj, objType = self._get_object_by_path(
+            self.folderId, _lstrip_path(path))
+        files = self.gc.get('item/%s/files' % obj["_id"])
+        content = six.BytesIO()
+        self.gc.downloadFile(files[0]["_id"], content)
+        return content.getvalue()
+
+    def readdir(self, path, fh):
+        dirents = ['.', '..']
+        if path == '/':
+            raw_listing = self.gc.get('folder/%s/listing' % self.folderId)
+        else:
+            obj, objType = self._get_object_by_path(
+                self.folderId, _lstrip_path(path))
+            raw_listing = self.gc.get('folder/%s/listing' % obj["_id"])
+
+        for objType in raw_listing.keys():
+            dirents += [_["name"] for _ in raw_listing[objType]]
+        return dirents
+
+    # Disable unused operations:
+    access = None
+    flush = None
+    getxattr = None
+    listxattr = None
+    opendir = None
+    open = None
+    release = None
+    releasedir = None
+    statfs = None
 
 
 class GirderFS(LoggingMixIn, Operations):
