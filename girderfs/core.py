@@ -219,27 +219,3 @@ class GirderFS(LoggingMixIn, Operations):
     open = None
     releasedir = None
     statfs = None
-
-
-if __name__ == '__main__':
-    import girder_client
-    import logging
-    from sys import argv, exit
-    from fuse import FUSE
-    girder_api_url = os.environ.get('GIRDER_API_URL',
-                                    'http://localhost:8080/api/v1')
-    try:
-        girder_api_key = os.environ['GIRDER_API_KEY']
-    except KeyError:
-        print('You need to set env var with girder api key')
-        raise
-
-    if len(argv) != 3:
-        print('usage: %s <folderId> <mountpoint>' % argv[0])
-        print('exampe: %s 57716a4b37025b0001078154 /tmp/myfs' % argv[0])
-        exit(1)
-
-    gc = girder_client.GirderClient(apiUrl=girder_api_url)
-    gc.authenticate(apiKey=girder_api_key)
-    logging.basicConfig(level=logging.DEBUG)
-    fuse = FUSE(GirderFS(argv[1], gc), argv[2], foreground=True, ro=True)
