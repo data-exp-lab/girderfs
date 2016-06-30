@@ -5,6 +5,7 @@ import os
 import six
 import time
 import pathlib
+import requests
 from stat import S_IFDIR, S_IFREG
 from errno import ENOENT
 
@@ -98,9 +99,15 @@ class RESTGirderFS(LoggingMixIn, Operations):
     def read(self, path, size, offset, fh):
         obj, objType = self._get_object_by_path(
             self.folderId, _lstrip_path(path))
-        files = self.gc.get('item/%s/files' % obj["_id"])
+        fileId = self.gc.get('item/%s/files' % obj["_id"])[0]["_id"]
+
         content = six.BytesIO()
-        self.gc.downloadFile(files[0]["_id"], content)
+        req = requests.get('%sfile/%s/download' % (self.gc.urlBase, fileId),
+                           headers={'Girder-Token': self.gc.token},
+                           params={'offset': offset,
+                                   'endByte': offset + size})
+        for chunk in req.iter_content(chunk_size=65536):
+            content.write(chunk)
         return content.getvalue()
 
     def readdir(self, path, fh):
