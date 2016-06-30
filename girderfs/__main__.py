@@ -33,10 +33,10 @@ def main(args=None):
 
     if args.c == 'remote':
         FUSE(RESTGirderFS(args.remote_folder, gc), args.local_folder,
-             foreground=False, ro=True)
+             foreground=False, ro=True, allow_other=True)
     elif args.c == 'direct':
         FUSE(GirderFS(args.remote_folder, gc), args.local_folder,
-             foreground=False, ro=True)
+             foreground=False, ro=True, allow_other=True)
     else:
         print('No implementation for command %s' % args.c)
 
