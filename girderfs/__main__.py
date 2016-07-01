@@ -2,7 +2,7 @@
 import argparse
 from girder_client import GirderClient
 from fuse import FUSE
-from girderfs.core import RESTGirderFS, GirderFS
+from girderfs.core import RESTGirderFS, LocalGirderFS
 
 
 def main(args=None):
@@ -35,7 +35,7 @@ def main(args=None):
         FUSE(RESTGirderFS(args.remote_folder, gc), args.local_folder,
              foreground=False, ro=True, allow_other=True)
     elif args.c == 'direct':
-        FUSE(GirderFS(args.remote_folder, gc), args.local_folder,
+        FUSE(LocalGirderFS(args.remote_folder, gc), args.local_folder,
              foreground=False, ro=True, allow_other=True)
     else:
         print('No implementation for command %s' % args.c)

@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-from collections import defaultdict
-
 import os
 import six
 import time
@@ -10,32 +8,7 @@ from stat import S_IFDIR, S_IFREG
 from errno import ENOENT
 
 from fuse import Operations, LoggingMixIn, FuseOSError
-
-FILE_MARKER = '<files>'
-
-
-def _mapListToKeys(dataDict, mapList):
-    """
-    Maps list ['a', 'b', 'c'] to dict['a']['b']['c']
-    """
-    if not mapList:
-        return dataDict
-    return _mapListToKeys(dataDict[mapList[0]], mapList[1:])
-
-
-def _attach(branch, trunk):
-    """
-    Insert a branch of directories on its trunk.
-    http://stackoverflow.com/questions/8484943
-    """
-    parts = branch.split('/', 1)
-    if len(parts) == 1:  # branch is a file
-        trunk[FILE_MARKER].append(parts[0])
-    else:
-        node, others = parts
-        if node not in trunk:
-            trunk[node] = defaultdict(dict, ((FILE_MARKER, []),))
-        _attach(others, trunk[node])
+import girder_client
 
 
 def _lstrip_path(path):
@@ -44,21 +17,13 @@ def _lstrip_path(path):
 
 
 def _convert_time(strtime):
-    return time.mktime(time.strptime(strtime[:-6], "%Y-%m-%dT%H:%M:%S.%f"))
+    return time.mktime(time.strptime(strtime[:19], "%Y-%m-%dT%H:%M:%S"))
 
 
-class RESTGirderFS(LoggingMixIn, Operations):
-    """
-    Filesystem for locally mounting a remote Girder folder
-
-    :param folderId: Folder id
-    :type folderId: str
-    :param gc: Authenticated instance of GirderClient
-    :type gc: girder_client.GriderClient
-    """
+class GirderFS(LoggingMixIn, Operations):
 
     def __init__(self, folderId, gc):
-        super(RESTGirderFS, self).__init__()
+        super(GirderFS, self).__init__()
         self.folderId = folderId
         self.gc = gc
         self.cache = {}
@@ -86,7 +51,10 @@ class RESTGirderFS(LoggingMixIn, Operations):
         try:
             return self.cache[objId]
         except KeyError:
-            self.cache[objId] = self.gc.get('folder/%s/listing' % objId)
+            try:
+                self.cache[objId] = self.gc.get('folder/%s/listing' % objId)
+            except girder_client.HttpError:
+                self.cache[objId] = self.gc.get('item/%s/listing' % objId)
         finally:
             return self.cache[objId]
 
@@ -100,26 +68,17 @@ class RESTGirderFS(LoggingMixIn, Operations):
             st = dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
         else:
             st = dict(st_mode=(S_IFREG | 0o644), st_nlink=1)
-
-        st.update(dict(st_ctime=_convert_time(obj["created"]),
-                       st_mtime=_convert_time(obj["updated"]),
-                       st_size=obj["size"],
-                       st_atime=time.time()))
+        ctime = _convert_time(obj["created"])
+        try:
+            mtime = _convert_time(obj["updated"])
+        except KeyError:
+            mtime = ctime
+        st.update(dict(st_ctime=ctime, st_mtime=mtime,
+                       st_size=obj["size"], st_atime=time.time()))
         return st
 
     def read(self, path, size, offset, fh):
-        obj, objType = self._get_object_by_path(
-            self.folderId, _lstrip_path(path))
-        fileId = self.gc.get('item/%s/files' % obj["_id"])[0]["_id"]
-
-        content = six.BytesIO()
-        req = requests.get('%sfile/%s/download' % (self.gc.urlBase, fileId),
-                           headers={'Girder-Token': self.gc.token},
-                           params={'offset': offset,
-                                   'endByte': offset + size})
-        for chunk in req.iter_content(chunk_size=65536):
-            content.write(chunk)
-        return content.getvalue()
+        raise NotImplemented
 
     def readdir(self, path, fh):
         dirents = ['.', '..']
@@ -146,7 +105,31 @@ class RESTGirderFS(LoggingMixIn, Operations):
     statfs = None
 
 
-class GirderFS(LoggingMixIn, Operations):
+class RESTGirderFS(GirderFS):
+    """
+    Filesystem for locally mounting a remote Girder folder
+
+    :param folderId: Folder id
+    :type folderId: str
+    :param gc: Authenticated instance of GirderClient
+    :type gc: girder_client.GriderClient
+    """
+
+    def read(self, path, size, offset, fh):
+        obj, objType = self._get_object_by_path(
+            self.folderId, _lstrip_path(path))
+
+        content = six.BytesIO()
+        req = requests.get(
+            '%sfile/%s/download' % (self.gc.urlBase, obj["_id"]),
+            headers={'Girder-Token': self.gc.token},
+            params={'offset': offset, 'endByte': offset + size})
+        for chunk in req.iter_content(chunk_size=65536):
+            content.write(chunk)
+        return content.getvalue()
+
+
+class LocalGirderFS(GirderFS):
     """
     Filesystem for mounting local Girder's FilesystemAssetstore
 
@@ -156,70 +139,12 @@ class GirderFS(LoggingMixIn, Operations):
     :type gc: girder_client.GriderClient
     """
 
-    def __init__(self, folderId, gc):
-        super(GirderFS, self).__init__()
-        self.folderId = folderId
-        self.gc = gc
-
-    def _refreshData(self):
-        self.data = self.gc.get('folder/%s/contents' % self.folderId)
-
-    def _getDirs(self):
-        self._refreshData()
-        dirs = defaultdict(dict, ((FILE_MARKER, []),))
-        for item in list(self.data.keys()):
-            _attach(item, dirs)
-        return dirs
-
-    def getattr(self, path, fh=None):
-        if path == '/':
-            return dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
-
-        self._refreshData()
-        if path[1:] in list(self.data.keys()):
-            st = os.lstat(self.data[path[1:]])
-            return dict((key, getattr(st, key))
-                        for key in ('st_atime', 'st_ctime', 'st_gid',
-                                    'st_mode', 'st_mtime', 'st_nlink',
-                                    'st_size', 'st_uid'))
-        else:
-            st = dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
-            st['st_ctime'] = st['st_mtime'] = st['st_atime'] = time()
-        return st
-
     def read(self, path, size, offset, fh):
-        fh = os.open(self.data[path[1:]], os.O_RDONLY)
+        obj, objType = self._get_object_by_path(
+            self.folderId, _lstrip_path(path))
+        fh = os.open(obj['path'], os.O_RDONLY)
         os.lseek(fh, offset, 0)
         return os.read(fh, size)
 
     def release(self, path, fh):
         return os.close(fh)
-
-    def _get_objects(self, path):
-        dirs = self._getDirs()
-        if path == '/':
-            ldirs = list(dirs.keys())
-            files = dirs[FILE_MARKER]
-        else:
-            mapPath = path[1:].split('/')
-            ldirs = list(_mapListToKeys(dirs, mapPath).keys())
-            mapPath.append(FILE_MARKER)
-            files = _mapListToKeys(dirs, mapPath)
-        ldirs.remove(FILE_MARKER)
-        return (ldirs, files)
-
-    def readdir(self, path, fh):
-        dirents = ['.', '..']
-        self._refreshData()
-        ldirs, files = self._get_objects(path)
-        return dirents + ldirs + files
-
-    # Disable unused operations:
-    access = None
-    flush = None
-    getxattr = None
-    listxattr = None
-    opendir = None
-    open = None
-    releasedir = None
-    statfs = None
