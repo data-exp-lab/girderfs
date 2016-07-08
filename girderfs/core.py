@@ -6,7 +6,7 @@ import pathlib
 import requests
 from stat import S_IFDIR, S_IFREG
 from errno import ENOENT
-
+from dateutil.parser import parse as tparse
 from fuse import Operations, LoggingMixIn, FuseOSError
 import girder_client
 
@@ -17,7 +17,7 @@ def _lstrip_path(path):
 
 
 def _convert_time(strtime):
-    return time.mktime(time.strptime(strtime[:19], "%Y-%m-%dT%H:%M:%S"))
+    return tparse(strtime).timestamp()
 
 
 class GirderFS(LoggingMixIn, Operations):
