@@ -3,6 +3,7 @@ import os
 import six
 import time
 import pathlib
+import encodings.idna  # NOQA: http://stackoverflow.com/questions/9144724/
 import requests
 from stat import S_IFDIR, S_IFREG
 from errno import ENOENT
