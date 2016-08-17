@@ -33,7 +33,7 @@ classifiers = [
         'Topic :: System :: Filesystems'
 ]
 
-install_requires = ['fusepy', 'girder-client', 'requests']
+install_requires = ['fusepy', 'girder-client', 'requests', 'python-dateutil']
 if sys.version_info[0] == 2:
     install_requires.append('pathlib')
 
@@ -49,6 +49,7 @@ setup(
         ]
     },
     install_requires=install_requires,
+    tests_require=['pytest'],
     author=girderfs.__author__,
     author_email='xarthisius.kk@gmail.com',
     url='https://github.com/data-exp-lab/girder_fs',
