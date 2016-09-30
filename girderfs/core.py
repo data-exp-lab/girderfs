@@ -196,6 +196,9 @@ class GirderFS(LoggingMixIn, Operations):
         attr = self.getattr(path)
         return attr['st_nlink'] == 1
 
+    def close(self):
+        return
+
     # Disable unused operations:
     access = None
     flush = None
