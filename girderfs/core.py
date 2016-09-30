@@ -6,6 +6,8 @@ Core classes for FUSE based filesystem handling Girder's resources
 import os
 import time
 import pathlib
+import logging
+import sys
 from stat import S_IFDIR, S_IFREG
 from errno import ENOENT
 # http://stackoverflow.com/questions/9144724/
@@ -16,14 +18,20 @@ from dateutil.parser import parse as tparse
 from fuse import Operations, LoggingMixIn, FuseOSError
 import girder_client
 
+# logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+
 
 def _lstrip_path(path):
     path_obj = pathlib.Path(path)
     return pathlib.Path(*path_obj.parts[1:])
 
-
-def _convert_time(strtime):
-    return tparse(strtime).timestamp()
+if sys.version_info[0] == 2:
+    def _convert_time(strtime):
+        from backports.datetime_timestamp import timestamp
+        return timestamp(tparse(strtime))
+else:
+    def _convert_time(strtime):
+        return tparse(strtime).timestamp()
 
 
 class GirderFS(LoggingMixIn, Operations):
@@ -59,20 +67,23 @@ class GirderFS(LoggingMixIn, Operations):
         if _file is not None:
             return _file, "file"
 
-        return FuseOSError(ENOENT)
+        raise FuseOSError(ENOENT)
 
     def _get_listing(self, obj_id):
         try:
             return self.cache[obj_id]
         except KeyError:
             try:
-                self.cache[obj_id] = self.girder_cli.get('folder/%s/listing' % obj_id)
+                self.cache[obj_id] = self.girder_cli.get(
+                    'folder/%s/listing' % obj_id)
             except girder_client.HttpError:
-                self.cache[obj_id] = self.girder_cli.get('item/%s/listing' % obj_id)
+                self.cache[obj_id] = self.girder_cli.get(
+                    'item/%s/listing' % obj_id)
         finally:
             return self.cache[obj_id]
 
     def getattr(self, path, fh=None):
+        logging.debug("-> getattr({})".format(path))
         if path == '/':
             return dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
         obj, obj_type = self._get_object_by_path(
@@ -95,6 +106,7 @@ class GirderFS(LoggingMixIn, Operations):
         raise NotImplementedError
 
     def readdir(self, path, fh):
+        logging.debug("-> readdir({})".format(path))
         dirents = ['.', '..']
         if path == '/':
             raw_listing = self._get_listing(self.folder_id)
@@ -107,11 +119,88 @@ class GirderFS(LoggingMixIn, Operations):
             dirents += [_["name"] for _ in raw_listing[obj_type]]
         return dirents
 
+    def getinfo(self, path):
+        logging.debug("-> getinfo({})".format(path))
+        '''Pyfilesystem essential method'''
+        if not path.startswith('/'):
+            path = '/' + path
+        return self.getattr(path)
+
+    def listdir(self, path='./', wildcard=None, full=False, absolute=False,
+                dirs_only=False, files_only=False):
+        logging.debug("-> listdir({})".format(path))
+
+        if not path.startswith('/'):
+            path = '/' + path
+        list_dir = self.listdirinfo(path, wildcard=wildcard, full=full,
+                                    absolute=absolute, dirs_only=dirs_only,
+                                    files_only=files_only)
+        return [_[0] for _ in list_dir]
+
+    def listdirinfo(self, path='./', wildcard=None, full=False, absolute=False,
+                    dirs_only=False, files_only=False):
+        '''
+        Pyfilesystem non-essential method
+
+        Retrieves a list of paths and path info under a given path.
+
+        This method behaves like listdir() but instead of just returning the
+        name of each item in the directory, it returns a tuple of the name and
+        the info dict as returned by getinfo.
+
+        This method may be more efficient than calling getinfo() on each
+        individual item returned by listdir(), particularly for network based
+        filesystems.
+        '''
+
+        logging.debug("-> listdirinfo({})".format(path))
+
+        def _get_stat(obj):
+            ctime = _convert_time(obj["created"])
+            try:
+                mtime = _convert_time(obj["updated"])
+            except KeyError:
+                mtime = ctime
+            return dict(st_ctime=ctime, st_mtime=mtime,
+                        st_size=obj["size"], st_atime=time.time())
+
+        listdir = []
+        if path == '/':
+            raw_listing = self._get_listing(self.folder_id)
+        else:
+            obj, obj_type = self._get_object_by_path(
+                self.folder_id, _lstrip_path(path))
+            raw_listing = self._get_listing(obj["_id"])
+
+        for obj in raw_listing['files']:
+            stat = dict(st_mode=(S_IFREG | 0o644), st_nlink=1)
+            stat.update(_get_stat(obj))
+            listdir.append((obj['name'], stat))
+
+        for obj in raw_listing['folders']:
+            stat = dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
+            stat.update(_get_stat(obj))
+            listdir.append((obj['name'], stat))
+
+        return listdir
+
+    def isdir(self, path):
+        '''Pyfilesystem essential method'''
+        logging.debug("-> isdir({})".format(path))
+        attr = self.getattr(path)
+        return attr['st_nlink'] == 2
+
+    def isfile(self, path):
+        '''Pyfilesystem essential method'''
+        logging.debug("-> isfile({})".format(path))
+        attr = self.getattr(path)
+        return attr['st_nlink'] == 1
+
     # Disable unused operations:
     access = None
     flush = None
-    getxattr = None
-    listxattr = None
+    # getxattr = None
+    # listxattr = None
     opendir = None
     open = None
     release = None
@@ -130,6 +219,7 @@ class RESTGirderFS(GirderFS):
     """
 
     def read(self, path, size, offset, fh):
+        logging.debug("-> read({})".format(path))
         obj, _ = self._get_object_by_path(
             self.folder_id, _lstrip_path(path))
 
@@ -142,6 +232,18 @@ class RESTGirderFS(GirderFS):
             content.write(chunk)
         return content.getvalue()
 
+    def open(self, path, mode="r", **kwargs):
+        logging.debug("-> open({})".format(path))
+        obj, _ = self._get_object_by_path(
+            self.folder_id, _lstrip_path(path))
+        content = six.BytesIO()
+        req = requests.get(
+            '%sfile/%s/download' % (self.girder_cli.urlBase, obj["_id"]),
+            headers={'Girder-Token': self.girder_cli.token})
+        for chunk in req.iter_content(chunk_size=65536):
+            content.write(chunk)
+        return content
+
 
 class LocalGirderFS(GirderFS):
     """
@@ -153,7 +255,14 @@ class LocalGirderFS(GirderFS):
     :type gc: girder_client.GriderClient
     """
 
+    def open(self, path, mode="r", **kwargs):
+        logging.debug("-> open({})".format(path))
+        obj, _ = self._get_object_by_path(
+            self.folder_id, _lstrip_path(path))
+        return os.open(obj['path'], os.O_RDONLY)
+
     def read(self, path, size, offset, fh):
+        logging.debug("-> read({})".format(path))
         obj, _ = self._get_object_by_path(
             self.folder_id, _lstrip_path(path))
         fh = os.open(obj['path'], os.O_RDONLY)
@@ -161,4 +270,5 @@ class LocalGirderFS(GirderFS):
         return os.read(fh, size)
 
     def release(self, path, fh):  # pylint: disable=unused-argument
+        logging.debug("-> release({})".format(path))
         return os.close(fh)

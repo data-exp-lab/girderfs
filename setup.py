@@ -33,9 +33,11 @@ classifiers = [
         'Topic :: System :: Filesystems'
 ]
 
-install_requires = ['fusepy', 'girder-client', 'requests', 'python-dateutil']
+install_requires = ['fusepy', 'girder-client', 'requests', 'python-dateutil',
+                    'six']
 if sys.version_info[0] == 2:
     install_requires.append('pathlib')
+    install_requires.append('backports.datetime_timestamp')
 
 setup(
     name='girderfs',
