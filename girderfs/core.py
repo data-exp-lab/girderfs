@@ -262,7 +262,7 @@ class LocalGirderFS(GirderFS):
         logging.debug("-> open({})".format(path))
         obj, _ = self._get_object_by_path(
             self.folder_id, _lstrip_path(path))
-        return os.open(obj['path'], os.O_RDONLY)
+        return open(obj['path'], mode)
 
     def read(self, path, size, offset, fh):
         logging.debug("-> read({})".format(path))
