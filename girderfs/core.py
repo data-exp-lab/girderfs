@@ -8,15 +8,17 @@ import time
 import pathlib
 import logging
 import sys
+import tempfile
 from stat import S_IFDIR, S_IFREG
 from errno import ENOENT
 # http://stackoverflow.com/questions/9144724/
 import encodings.idna  # NOQA pylint: disable=unused-import
-import requests
-import six
+
 from dateutil.parser import parse as tparse
+import diskcache
 from fuse import Operations, LoggingMixIn, FuseOSError
 import girder_client
+import requests
 
 # logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
@@ -24,6 +26,7 @@ import girder_client
 def _lstrip_path(path):
     path_obj = pathlib.Path(path)
     return pathlib.Path(*path_obj.parts[1:])
+
 
 if sys.version_info[0] == 2:
     def _convert_time(strtime):
@@ -48,7 +51,8 @@ class GirderFS(LoggingMixIn, Operations):
         super(GirderFS, self).__init__()
         self.folder_id = folder_id
         self.girder_cli = girder_cli
-        self.cache = {}
+        self.fd = 0
+        self.cache = diskcache.Cache(tempfile.mkdtemp())
 
     def _get_object_by_path(self, obj_id, path):
         raw_listing = self._get_listing(obj_id)
@@ -98,7 +102,7 @@ class GirderFS(LoggingMixIn, Operations):
             mtime = _convert_time(obj["updated"])
         except KeyError:
             mtime = ctime
-        stat.update(dict(st_ctime=ctime, st_mtime=mtime,
+        stat.update(dict(st_ctime=ctime, st_mtime=mtime, st_blocks=1,
                          st_size=obj["size"], st_atime=time.time()))
         return stat
 
@@ -196,9 +200,6 @@ class GirderFS(LoggingMixIn, Operations):
         attr = self.getattr(path)
         return attr['st_nlink'] == 1
 
-    def close(self):
-        return
-
     # Disable unused operations:
     access = None
     flush = None
@@ -225,27 +226,40 @@ class RESTGirderFS(GirderFS):
         logging.debug("-> read({})".format(path))
         obj, _ = self._get_object_by_path(
             self.folder_id, _lstrip_path(path))
-
-        content = six.BytesIO()
-        req = requests.get(
-            '%sfile/%s/download' % (self.girder_cli.urlBase, obj["_id"]),
-            headers={'Girder-Token': self.girder_cli.token},
-            params={'offset': offset, 'endByte': offset + size})
-        for chunk in req.iter_content(chunk_size=65536):
-            content.write(chunk)
-        return content.getvalue()
+        cacheKey = '#'.join((obj['_id'], obj.get('updated', obj['created'])))
+        fp = self.cache.get(cacheKey, read=True)
+        if fp:
+            logging.debug(
+                '-> hitting cache {} {} {}'.format(path, size, offset))
+            fp.seek(offset)
+            return fp.read(size)
+        else:
+            logging.debug('-> downloading')
+            req = requests.get(
+                '%sfile/%s/download' % (self.girder_cli.urlBase, obj["_id"]),
+                headers={'Girder-Token': self.girder_cli.token}, stream=True)
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                for chunk in req.iter_content(chunk_size=65536):
+                    tmp.write(chunk)
+            with open(tmp.name, 'rb') as fp:
+                self.cache.set(cacheKey, fp, read=True)
+                os.remove(tmp.name)
+                fp.seek(offset)
+                return fp.read(size)
 
     def open(self, path, mode="r", **kwargs):
-        logging.debug("-> open({})".format(path))
-        obj, _ = self._get_object_by_path(
-            self.folder_id, _lstrip_path(path))
-        content = six.BytesIO()
-        req = requests.get(
-            '%sfile/%s/download' % (self.girder_cli.urlBase, obj["_id"]),
-            headers={'Girder-Token': self.girder_cli.token})
-        for chunk in req.iter_content(chunk_size=65536):
-            content.write(chunk)
-        return content
+        logging.debug("-> open({}, {})".format(path, self.fd))
+        self.fd += 1
+        return self.fd
+
+    def destroy(self, private_data):
+        self.cache.clear()
+        self.cache.close()
+
+    def release(self, path, fh):  # pylint: disable=unused-argument
+        logging.debug("-> release({}, {})".format(path, self.fd))
+        self.fd -= 1
+        return self.fd
 
 
 class LocalGirderFS(GirderFS):
