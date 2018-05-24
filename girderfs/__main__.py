@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
 import argparse
-from girder_client import GirderClient
+import os
+from ctypes import cdll
 from fuse import FUSE
-from girderfs.core import RESTGirderFS, LocalGirderFS
+from girder_client import GirderClient
+
+from girderfs.core import \
+    RESTGirderFS, LocalGirderFS
+
+
+_libc = cdll.LoadLibrary('libc.so.6')
+_setns = _libc.setns
+CLONE_NEWNS = 0x00020000
+
+
+def setns(fd, nstype):
+    if hasattr(fd, 'fileno'):
+        fd = fd.fileno()
+    _setns(fd, nstype)
 
 
 def main(args=None):
@@ -16,6 +31,9 @@ def main(args=None):
     parser.add_argument('--token', required=False, default=None)
     parser.add_argument('-c', default='remote', choices=['remote', 'direct'],
                         help='command to run')
+    parser.add_argument('--foreground', dest='foreground',
+                        action='store_true')
+    parser.add_argument('--hostns', dest='hostns', action='store_true')
     parser.add_argument('local_folder', help='path to local target folder')
     parser.add_argument('remote_folder', help='Girder\'s folder id')
 
@@ -31,12 +49,18 @@ def main(args=None):
     else:
         raise RuntimeError("You need to specify apiKey or user/pass")
 
+    if args.hostns:
+        targetns = os.path.join(os.environ.get('HOSTDIR', '/'),
+                                'proc/1/ns/mnt')
+        with open(targetns) as fd:
+            setns(fd, CLONE_NEWNS)
+
     if args.c == 'remote':
         FUSE(RESTGirderFS(args.remote_folder, gc), args.local_folder,
-             foreground=False, ro=True, allow_other=True)
+             foreground=args.foreground, ro=True, allow_other=True)
     elif args.c == 'direct':
         FUSE(LocalGirderFS(args.remote_folder, gc), args.local_folder,
-             foreground=False, ro=True, allow_other=True)
+             foreground=args.foreground, ro=True, allow_other=True)
     else:
         print('No implementation for command %s' % args.c)
 
