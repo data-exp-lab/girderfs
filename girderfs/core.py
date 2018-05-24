@@ -3,10 +3,12 @@
 Core classes for FUSE based filesystem handling Girder's resources
 """
 
+import datetime
 import os
 import time
 import pathlib
 import logging
+import shutil
 import sys
 import tempfile
 from stat import S_IFDIR, S_IFREG
@@ -25,7 +27,10 @@ import requests
 
 def _lstrip_path(path):
     path_obj = pathlib.Path(path)
-    return pathlib.Path(*path_obj.parts[1:])
+    if path_obj.is_absolute():
+        return pathlib.Path(*path_obj.parts[1:])
+    else:
+        return path_obj
 
 
 if sys.version_info[0] == 2:
@@ -52,12 +57,12 @@ class GirderFS(LoggingMixIn, Operations):
         self.folder_id = folder_id
         self.girder_cli = girder_cli
         self.fd = 0
-        self.cache = diskcache.Cache(tempfile.mkdtemp())
+        self.cachedir = tempfile.mkdtemp()
+        self.cache = diskcache.Cache(self.cachedir)
 
     def _get_object_by_path(self, obj_id, path):
         raw_listing = self._get_listing(obj_id)
-        folder = next((item for item in raw_listing['folders']
-                       if item["name"] == path.parts[0]), None)
+        folder = self._find(path.parts[0], raw_listing['folders'])
 
         if folder is not None:
             if len(path.parts) == 1:
@@ -66,12 +71,14 @@ class GirderFS(LoggingMixIn, Operations):
                 return self._get_object_by_path(folder["_id"],
                                                 pathlib.Path(*path.parts[1:]))
 
-        _file = next((item for item in raw_listing['files']
-                      if item["name"] == path.parts[0]), None)
+        _file = self._find(path.parts[0], raw_listing['files'])
         if _file is not None:
             return _file, "file"
 
         raise FuseOSError(ENOENT)
+
+    def _find(self, name, list):
+        return next((item for item in list if item['name'] == name), None)
 
     def _get_listing(self, obj_id):
         try:
@@ -89,7 +96,9 @@ class GirderFS(LoggingMixIn, Operations):
     def getattr(self, path, fh=None):
         logging.debug("-> getattr({})".format(path))
         if path == '/':
-            return dict(st_mode=(S_IFDIR | 0o755), st_nlink=2)
+            now = _convert_time(str(datetime.datetime.now()))
+            return dict(st_mode=(S_IFDIR | 0o755), st_nlink=2,
+                        st_ctime=now, st_atime=now, st_mtime=now)
         obj, obj_type = self._get_object_by_path(
             self.folder_id, _lstrip_path(path))
 
@@ -112,16 +121,19 @@ class GirderFS(LoggingMixIn, Operations):
     def readdir(self, path, fh):
         logging.debug("-> readdir({})".format(path))
         dirents = ['.', '..']
+        raw_listing = self._get_listing_by_path(path)
+
+        for obj_type in list(raw_listing.keys()):
+            dirents += [_["name"] for _ in raw_listing[obj_type]]
+        return dirents
+
+    def _get_listing_by_path(self, path):
         if path == '/':
-            raw_listing = self._get_listing(self.folder_id)
+            return self._get_listing(self.folder_id)
         else:
             obj, obj_type = self._get_object_by_path(
                 self.folder_id, _lstrip_path(path))
-            raw_listing = self._get_listing(obj["_id"])
-
-        for obj_type in raw_listing.keys():
-            dirents += [_["name"] for _ in raw_listing[obj_type]]
-        return dirents
+            return self._get_listing(obj["_id"])
 
     def getinfo(self, path):
         logging.debug("-> getinfo({})".format(path))
@@ -169,12 +181,7 @@ class GirderFS(LoggingMixIn, Operations):
                         st_size=obj["size"], st_atime=time.time())
 
         listdir = []
-        if path == '/':
-            raw_listing = self._get_listing(self.folder_id)
-        else:
-            obj, obj_type = self._get_object_by_path(
-                self.folder_id, _lstrip_path(path))
-            raw_listing = self._get_listing(obj["_id"])
+        raw_listing = self._get_listing_by_path(path)
 
         for obj in raw_listing['files']:
             stat = dict(st_mode=(S_IFREG | 0o644), st_nlink=1)
@@ -199,6 +206,14 @@ class GirderFS(LoggingMixIn, Operations):
         logging.debug("-> isfile({})".format(path))
         attr = self.getattr(path)
         return attr['st_nlink'] == 1
+
+    def destroy(self, private_data):
+        logging.debug("-> destroy()")
+        not_removed = True
+        while not_removed:
+            not_removed = self.cache.clear()
+        self.cache.close()
+        shutil.rmtree(self.cachedir)
 
     # Disable unused operations:
     access = None
@@ -251,10 +266,6 @@ class RESTGirderFS(GirderFS):
         logging.debug("-> open({}, {})".format(path, self.fd))
         self.fd += 1
         return self.fd
-
-    def destroy(self, private_data):
-        self.cache.clear()
-        self.cache.close()
 
     def release(self, path, fh):  # pylint: disable=unused-argument
         logging.debug("-> release({}, {})".format(path, self.fd))
